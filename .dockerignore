@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Node
+node_modules
+npm-debug.log
+.next
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+cloned_site/
+*.log 
