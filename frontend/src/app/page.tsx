@@ -2,10 +2,28 @@
 
 import { useState } from "react";
 
+function ClonedWebsite({ dir }: { dir: string }) {
+  if (!dir) return null;
+  const dirWithoutPrefix = dir.replace('cloned_site/', '');
+  const src = `http://localhost:8000/static/${dirWithoutPrefix}/index.html`;
+  return (
+    <div className="w-full h-[calc(100vh-200px)] border rounded shadow">
+      <iframe
+        src={src}
+        title="Cloned Website"
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+        className="w-full h-full bg-white"
+        referrerPolicy="no-referrer"
+      />
+    </div>
+  );
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [clonedDir, setClonedDir] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,6 +47,7 @@ export default function Home() {
 
       const data = await response.json();
       console.log("Success:", data);
+      setClonedDir(data.original_dir);
       setUrl(""); // Clear the input after successful submission
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -38,9 +57,9 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-gray-50 dark:bg-gray-900">
-      <div className="w-full max-w-md space-y-8">
-        <div className="text-center">
+    <div className="min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
+      <div className="w-full max-w-4xl mx-auto p-8">
+        <div className="text-center mb-8">
           <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
            Orchids Take-home Website Cloner
           </h1>
@@ -49,36 +68,22 @@ export default function Home() {
           </p>
         </div>
         
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="space-y-4">
-            <div>
-              <label htmlFor="url" className="sr-only">
-                Website URL
-              </label>
-              <input
-                id="url"
-                name="url"
-                type="url"
-                required
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                className="relative block w-full rounded-md border-0 py-3 px-4 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 dark:focus:ring-blue-500 bg-white dark:bg-gray-800"
-                placeholder="https://www.orchids.app/"
-              />
-            </div>
-          </div>
-
-          {error && (
-            <div className="text-red-500 text-sm text-center">
-              {error}
-            </div>
-          )}
-
-          <div>
+        <form className="mb-8" onSubmit={handleSubmit}>
+          <div className="flex gap-4">
+            <input
+              id="url"
+              name="url"
+              type="url"
+              required
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              className="flex-1 rounded-md border-0 py-3 px-4 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 dark:focus:ring-blue-500 bg-white dark:bg-gray-800"
+              placeholder="https://www.orchids.app/"
+            />
             <button
               type="submit"
               disabled={isLoading}
-              className={`group relative flex w-full justify-center rounded-md px-3 py-3 text-sm font-semibold text-white transition-colors ${
+              className={`px-6 py-3 rounded-md text-sm font-semibold text-white transition-colors ${
                 isLoading 
                   ? "bg-blue-400 cursor-not-allowed" 
                   : "bg-blue-600 hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
@@ -87,7 +92,15 @@ export default function Home() {
               {isLoading ? "Submitting..." : "Submit"}
             </button>
           </div>
+
+          {error && (
+            <div className="text-red-500 text-sm text-center mt-2">
+              {error}
+            </div>
+          )}
         </form>
+
+        <ClonedWebsite dir={clonedDir} />
       </div>
     </div>
   );

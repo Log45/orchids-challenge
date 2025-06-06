@@ -14,11 +14,17 @@ import shelve
 import concurrent.futures
 from functools import partial
 
+# Configure logging with more detail
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 class WebsiteGenerator:
     def __init__(self, api_key: str):
+        logger.info("Initializing WebsiteGenerator")
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model_heavy = "claude-opus-4-20250514"
         self.model_js = "claude-sonnet-4-20250514"  # Better for JavaScript
@@ -27,12 +33,16 @@ class WebsiteGenerator:
         self.encoding = tiktoken.get_encoding("cl100k_base")
         self.rate_limit_delay = 1
         self.cache = shelve.open("api_cache")
-        logger.info("Initialized WebsiteGenerator")
+        logger.info("WebsiteGenerator initialized successfully")
 
     def _count_tokens(self, text: str) -> int:
-        return len(self.encoding.encode(text))
+        """Count the number of tokens in a text string."""
+        count = len(self.encoding.encode(text))
+        logger.debug(f"Token count: {count}")
+        return count
 
     def _strip_comments(self, text: str, filetype: str) -> str:
+        """Strip comments from CSS or JavaScript code."""
         logger.debug(f"Stripping comments from {filetype}")
         if filetype == 'css':
             return re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
@@ -41,10 +51,12 @@ class WebsiteGenerator:
         return text
 
     def _chunk_content(self, content: str, max_tokens: int) -> List[str]:
-        logger.debug("Chunking content")
+        """Split content into chunks that fit within token limit."""
+        logger.debug(f"Chunking content with max_tokens={max_tokens}")
         chunks = []
         current_chunk = []
         current_tokens = 0
+        
         lines = content.split('\n')
         for line in lines:
             line_tokens = self._count_tokens(line)
@@ -55,20 +67,32 @@ class WebsiteGenerator:
             else:
                 current_chunk.append(line)
                 current_tokens += line_tokens
+        
         if current_chunk:
             chunks.append('\n'.join(current_chunk))
+        
         logger.info(f"Split content into {len(chunks)} chunks")
         return chunks
 
     def _read_files(self, website_dir: str) -> Tuple[str, str, str, List[Path]]:
+        """Read HTML, CSS, JS files and collect all assets from the website directory."""
         logger.info(f"Reading files from {website_dir}")
         website_path = Path(website_dir)
         html_path = website_path / "index.html"
+        
+        if not html_path.exists():
+            logger.error(f"HTML file not found at {html_path}")
+            raise FileNotFoundError(f"HTML file not found at {html_path}")
+        
+        logger.info("Reading HTML file")
+        html_content = html_path.read_text(encoding='utf-8')
+        
+        # Find all CSS and JS files
         css_files = list(website_path.rglob("*.css"))
         js_files = list(website_path.rglob("*.js"))
-
-        html_content = html_path.read_text(encoding='utf-8') if html_path.exists() else ""
-
+        
+        logger.info(f"Found {len(css_files)} CSS files and {len(js_files)} JS files")
+        
         css_content = ""
         for css_file in css_files:
             raw = css_file.read_text(encoding='utf-8')
@@ -76,7 +100,7 @@ class WebsiteGenerator:
             if self._count_tokens(stripped) > 100:
                 logger.debug(f"Including CSS file: {css_file}")
                 css_content += f"\n/* {css_file.name} */\n" + stripped
-
+        
         js_content = ""
         for js_file in js_files:
             raw = js_file.read_text(encoding='utf-8')
@@ -84,34 +108,35 @@ class WebsiteGenerator:
             if self._count_tokens(stripped) > 100:
                 logger.debug(f"Including JS file: {js_file}")
                 js_content += f"\n// {js_file.name}\n" + stripped
-
+        
         asset_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot'}
         asset_files = []
         for ext in asset_extensions:
             asset_files.extend(website_path.rglob(f"*{ext}"))
-
-        logger.info(f"Found {len(css_files)} CSS, {len(js_files)} JS, {len(asset_files)} asset files")
+        
+        logger.info(f"Found {len(asset_files)} asset files")
         return html_content, css_content, js_content, asset_files
 
-    def _make_api_request(self, prompt: str, model: str = None, max_tokens: int = 4000) -> str:
-        model = model or self.model_js  # Default to JS model
+    def _make_api_request(self, prompt: str, model: str = None, max_tokens: int = 8000) -> str:
+        """Make an API request with retry logic and rate limiting."""
+        model = model or self.model_js
         key = hashlib.md5((model + prompt).encode()).hexdigest()
         
-        # Check cache first
         if key in self.cache:
             logger.info(f"Cache hit for model={model}")
             return self.cache[key]
-            
-        logger.info(f"Making API call with model={model}")
         
-        # Retry logic for both rate limits and overload errors
+        logger.info(f"Making API call with model={model}")
+        logger.debug(f"Prompt length: {len(prompt)} characters")
+        
         max_retries = 5
-        base_delay = 2
-        max_delay = 30
+        base_delay = 5  # Increased base delay
+        max_delay = 60  # Increased max delay
         
         for attempt in range(max_retries):
             try:
                 time.sleep(self.rate_limit_delay)
+                logger.debug(f"API request attempt {attempt + 1}/{max_retries}")
                 response = self.client.messages.create(
                     model=model,
                     max_tokens=max_tokens,
@@ -125,19 +150,23 @@ class WebsiteGenerator:
             except Exception as e:
                 error_str = str(e).lower()
                 if attempt < max_retries - 1:
-                    # Calculate delay with exponential backoff, but cap it
+                    # Calculate delay with exponential backoff
                     delay = min(base_delay * (2 ** attempt), max_delay)
                     
                     if "rate_limit_error" in error_str:
                         logger.warning(f"Rate limit hit, attempt {attempt + 1}/{max_retries}, waiting {delay}s")
-                    elif "overloaded" in error_str:
-                        logger.warning(f"API overloaded, attempt {attempt + 1}/{max_retries}, waiting {delay}s")
+                    elif "overloaded" in error_str or "529" in error_str:
+                        logger.warning(f"API overloaded (529), attempt {attempt + 1}/{max_retries}, waiting {delay}s")
+                        # Add extra delay for overload errors
+                        delay = min(delay * 2, max_delay)
                     else:
                         logger.warning(f"API error: {str(e)}, attempt {attempt + 1}/{max_retries}, waiting {delay}s")
                     
+                    logger.info(f"Waiting {delay} seconds before retry...")
                     time.sleep(delay)
                     continue
-                raise  # Re-raise if out of retries
+                logger.error(f"All API request attempts failed: {str(e)}")
+                raise
 
     def _generate_css_chunk(self, chunk: str, index: int, total: int) -> str:
         """Generate CSS for a single chunk."""
@@ -183,255 +212,183 @@ Requirements:
             logger.error(f"Error generating JS chunk {index+1}: {str(e)}")
             return chunk  # Fallback to original chunk
 
+    def _generate_html_chunk(self, chunk: str, index: int, total: int) -> str:
+        """Generate optimized HTML for a chunk."""
+        logger.info(f"Generating HTML chunk {index + 1}/{total}")
+        try:
+            prompt = f"""Convert this HTML chunk to modern HTML5. Keep your response concise and complete.
+
+IMPORTANT: Your response must be a complete HTML section wrapped in ```html and ``` markers.
+WARNING: You have a token limit, so focus on the most important optimizations.
+
+Input HTML chunk ({index + 1}/{total}):
+```html
+{chunk}
+```
+
+Key Requirements:
+- Convert to semantic HTML5
+- Preserve functionality and references
+- Add ARIA attributes
+- Use semantic elements
+- Keep class names and IDs
+- Ensure backward compatibility
+
+Remember: Your response must be complete and properly formatted with ```html and ``` markers."""
+
+            optimized_chunk = self._make_api_request(prompt, model=self.model_js)
+            logger.debug(f"Successfully generated HTML chunk {index + 1}")
+            return optimized_chunk
+            
+        except Exception as e:
+            logger.error(f"Error generating HTML chunk {index + 1}: {str(e)}")
+            return chunk
+
     def _generate_global_resources(self, html_content: str, css_content: str, js_content: str) -> Dict[str, str]:
         """Generate global resources (shared CSS and JS) for the website in parallel."""
-        logger.info("Generating global CSS and JS resources")
+        logger.info("Starting HTML5 optimization")
+        logger.debug(f"HTML content length: {len(html_content)} characters")
         
-        # Split into smaller chunks to reduce load
-        css_chunks = self._chunk_content(css_content, self.max_tokens // 2)
-        js_chunks = self._chunk_content(js_content, self.max_tokens // 2)
-        
-        # Create partial functions with fixed arguments
-        generate_css = partial(self._generate_css_chunk, total=len(css_chunks))
-        generate_js = partial(self._generate_js_chunk, total=len(js_chunks))
-        
-        # Process chunks in parallel using ThreadPoolExecutor
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit CSS and JS generation tasks
-            css_futures = [executor.submit(generate_css, chunk, i) 
-                          for i, chunk in enumerate(css_chunks)]
-            js_futures = [executor.submit(generate_js, chunk, i) 
-                         for i, chunk in enumerate(js_chunks)]
-            
-            # Collect results as they complete
-            generated_css = []
-            generated_js = []
-            
-            # Process CSS results
-            for future in concurrent.futures.as_completed(css_futures):
-                try:
-                    result = future.result()
-                    generated_css.append(result)
-                except Exception as e:
-                    logger.error(f"Error in CSS generation: {str(e)}")
-                    # Find the original chunk that failed
-                    index = css_futures.index(future)
-                    generated_css.append(css_chunks[index])
-            
-            # Process JS results
-            for future in concurrent.futures.as_completed(js_futures):
-                try:
-                    result = future.result()
-                    generated_js.append(result)
-                except Exception as e:
-                    logger.error(f"Error in JS generation: {str(e)}")
-                    # Find the original chunk that failed
-                    index = js_futures.index(future)
-                    generated_js.append(js_chunks[index])
-        
-        return {
-            "css": "\n".join(generated_css),
-            "js": "\n".join(generated_js)
-        }
-
-    def close(self):
-        self.cache.close()
-
-    def _generate_component(self, component: Dict[str, str]) -> str:
-        """Generate a modern version of a web component using Claude."""
-        prompt = f"""Create a modern, clean version of this web component:
-
-Component Type: {component['type']}
-Component ID: {component['id']}
-Component Classes: {', '.join(component['classes'])}
-
-HTML:
-```html
-{component['html']}
-```
-
-CSS:
-```css
-{component['css']}
-```
-
-JavaScript:
-```javascript
-{component['js']}
-```
-
-Requirements:
-- Maintain the same functionality
-- Use modern best practices
-- Make it responsive
-- Add helpful comments
-- Use semantic HTML5 with fallbacks for older browsers
-- Ensure accessibility
-- Optimize performance
-- Preserve all asset references (images, fonts, etc.)
-- Include necessary polyfills or fallbacks for older browsers
-- Use feature detection instead of browser detection
-- Ensure graceful degradation for older browsers
-- Maintain consistency with the global styles and scripts
-"""
-
         try:
-            return self._make_api_request(prompt, max_tokens=2000)
+            # Split HTML into chunks
+            html_chunks = self._chunk_content(html_content, self.max_tokens // 2)
+            logger.info(f"Split HTML into {len(html_chunks)} chunks")
+            
+            # Process chunks in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Create partial function with fixed arguments
+                generate_html = partial(self._generate_html_chunk, total=len(html_chunks))
+                
+                # Submit HTML generation tasks
+                html_futures = [executor.submit(generate_html, chunk, i) 
+                              for i, chunk in enumerate(html_chunks)]
+                
+                # Collect results as they complete
+                generated_html = []
+                for future in concurrent.futures.as_completed(html_futures):
+                    try:
+                        result = future.result()
+                        generated_html.append(result)
+                    except Exception as e:
+                        logger.error(f"Error in HTML generation: {str(e)}")
+                        # Find the original chunk that failed
+                        index = html_futures.index(future)
+                        generated_html.append(html_chunks[index])
+            
+            # Combine the generated HTML chunks
+            logger.info("Combining generated HTML chunks")
+            combined_html = "\n".join(generated_html)
+            
+            # Parse the combined response
+            logger.info("Parsing combined HTML response")
+            sections = self._parse_response_sections(combined_html)
+            
+            if not sections.get("html"):
+                logger.warning("No HTML content found in API response, using original HTML")
+                return {
+                    "html": html_content,
+                    "css": css_content,
+                    "js": js_content
+                }
+            
+            logger.info("HTML5 optimization completed successfully")
+            return {
+                "html": sections["html"],
+                "css": css_content,
+                "js": js_content
+            }
+            
         except Exception as e:
-            logger.error(f"Error generating component: {str(e)}")
-            # If we fail, return the original component
-            return component['html']
-
-    def generate_website(self, website_dir: str) -> Dict[str, str]:
-        """Generate a modern version of the website using Claude."""
-        try:
-            # Read the original website files and collect assets
-            html_content, css_content, js_content, asset_files = self._read_files(website_dir)
-            
-            # Store current CSS and JS for component analysis
-            self.current_css = css_content
-            self.current_js = js_content
-            
-            # Step 1: Generate global resources
-            logger.info("Generating global resources...")
-            global_resources = self._generate_global_resources(html_content, css_content, js_content)
-            
-            # Step 2: Identify and generate components
-            logger.info("Identifying components...")
-            components = self._identify_components(html_content)
-            generated_components = []
-            
-            for i, component in enumerate(components):
-                logger.info(f"Generating component {i+1}/{len(components)}")
-                generated = self._generate_component(component)
-                generated_components.append({
-                    'original': component,
-                    'generated': generated
-                })
-            
-            # Step 3: Integrate everything
-            logger.info("Integrating components...")
-            integration_prompt = f"""Integrate these components into a complete website:
-
-Global CSS:
-```css
-{global_resources['css']}
-```
-
-Global JavaScript:
-```javascript
-{global_resources['js']}
-```
-
-Components:
-{json.dumps(generated_components, indent=2)}
-
-Requirements:
-- Create a complete, modern website
-- Maintain component relationships
-- Ensure proper integration of global resources
-- Preserve all functionality
-- Optimize performance
-- Ensure browser compatibility
-- Separate the response into HTML, CSS, and JavaScript sections
-"""
-
-            final_response = self._make_api_request(integration_prompt)
-            sections = self._parse_response_sections(final_response)
-            
-            # Add asset files to the response
-            sections["assets"] = [str(asset) for asset in asset_files]
-            
-            return sections
-
-        except Exception as e:
-            logger.error(f"Error generating website: {str(e)}")
-            raise
+            logger.error(f"Error during HTML optimization: {str(e)}")
+            logger.info("Falling back to original HTML")
+            return {
+                "html": html_content,
+                "css": css_content,
+                "js": js_content
+            }
 
     def _parse_response_sections(self, content: str) -> Dict[str, str]:
-        """Parse the response into separate HTML, CSS, and JS sections."""
+        """Parse the response into HTML, CSS, and JS sections."""
+        logger.debug("Parsing API response sections")
         sections = {
             "html": "",
             "css": "",
             "js": ""
         }
         
-        current_section = None
-        current_content = []
-        
-        for line in content.split('\n'):
-            if line.startswith('```html'):
-                current_section = 'html'
-                continue
-            elif line.startswith('```css'):
-                current_section = 'css'
-                continue
-            elif line.startswith('```javascript'):
-                current_section = 'js'
-                continue
-            elif line.startswith('```'):
-                if current_section:
-                    sections[current_section] = '\n'.join(current_content)
-                    current_content = []
-                    current_section = None
-                continue
-            
-            if current_section:
-                current_content.append(line)
+        html_match = re.search(r'```html\n(.*?)\n```', content, re.DOTALL)
+        if html_match:
+            sections["html"] = html_match.group(1).strip()
+            logger.debug("Successfully extracted HTML section")
+        else:
+            logger.warning("No HTML section found in API response")
         
         return sections
 
-    def save_website(self, website_dir: str, sections: Dict[str, str], output_dir = "/generated_website") -> str:
-        """Save the generated website files to the specified directory.
-        
-        Args:
-            website_dir: The directory where the original website is stored
-            sections: Dictionary containing the generated HTML, CSS, and JS sections
-            output_dir: The directory to save the generated website to
-            
-        Returns:
-            str: Path to the generated website directory
-        """
+    def generate_website(self, website_dir: str) -> Dict[str, str]:
+        """Generate a modern version of the website using Claude."""
+        logger.info(f"Starting website generation for {website_dir}")
         try:
-            # Create the output directory
-            if output_dir == "":
-                output_dir = Path(website_dir) / "generated_website"
-            else:
-                output_dir = Path(output_dir)
-            output_dir.mkdir(exist_ok=True)
+            # Read the original website files and collect assets
+            html_content, css_content, js_content, asset_files = self._read_files(website_dir)
+            logger.info("Successfully read all website files")
+            
+            # Generate optimized version
+            logger.info("Generating optimized version")
+            sections = self._generate_global_resources(html_content, css_content, js_content)
+            
+            # Add asset files to the response
+            sections["assets"] = [str(asset) for asset in asset_files]
+            logger.info(f"Added {len(asset_files)} assets to the response")
+            
+            logger.info("Website generation completed successfully")
+            return sections
+
+        except Exception as e:
+            logger.error(f"Error generating website: {str(e)}")
+            raise
+
+    def close(self):
+        """Close the cache and clean up resources."""
+        logger.info("Closing WebsiteGenerator")
+        self.cache.close()
+        logger.info("Cache closed successfully")
+
+    def save_website(self, website_dir: str, sections: Dict[str, str], output_dir = "./generated_website") -> str:
+        """Save the generated website files to the specified directory."""
+        logger.info(f"Saving generated website to {output_dir}")
+        try:
+            # Create output directory
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
             
             # Save HTML
-            with open(output_dir / "index.html", "w", encoding="utf-8") as f:
-                f.write(sections["html"])
-            logger.info(f"Saved HTML to: {output_dir / 'index.html'}")
+            html_path = output_path / "index.html"
+            logger.info(f"Saving HTML to {html_path}")
+            html_path.write_text(sections["html"], encoding='utf-8')
             
             # Save CSS
-            with open(output_dir / "styles.css", "w", encoding="utf-8") as f:
-                f.write(sections["css"])
-            logger.info(f"Saved CSS to: {output_dir / 'styles.css'}")
+            css_path = output_path / "styles.css"
+            logger.info(f"Saving CSS to {css_path}")
+            css_path.write_text(sections["css"], encoding='utf-8')
             
-            # Save JavaScript
-            with open(output_dir / "script.js", "w", encoding="utf-8") as f:
-                f.write(sections["js"])
-            logger.info(f"Saved JavaScript to: {output_dir / 'script.js'}")
+            # Save JS
+            js_path = output_path / "script.js"
+            logger.info(f"Saving JavaScript to {js_path}")
+            js_path.write_text(sections["js"], encoding='utf-8')
             
-            # Copy all assets
-            source_dir = Path(website_dir)
-            for asset_path in sections["assets"]:
-                asset_path = Path(asset_path)
-                if asset_path.exists():
-                    # Calculate relative path from source directory
-                    rel_path = asset_path.relative_to(source_dir)
-                    target_path = output_dir / rel_path
-                    
-                    # Create parent directories if they don't exist
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Copy the file
-                    shutil.copy2(asset_path, target_path)
-                    logger.info(f"Copied asset: {asset_path} -> {target_path}")
+            # Copy assets
+            if "assets" in sections:
+                logger.info("Copying assets")
+                for asset_path in sections["assets"]:
+                    asset = Path(asset_path)
+                    if asset.exists():
+                        dest = output_path / asset.name
+                        logger.debug(f"Copying {asset} to {dest}")
+                        shutil.copy2(asset, dest)
             
-            return str(output_dir)
+            logger.info("Website saved successfully")
+            return str(output_path)
             
         except Exception as e:
             logger.error(f"Error saving website: {str(e)}")

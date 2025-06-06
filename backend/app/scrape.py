@@ -9,6 +9,8 @@ import traceback
 import sys
 import time
 import asyncio
+from bs4 import BeautifulSoup
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,6 +24,7 @@ load_dotenv()
 client = Hyperbrowser(api_key=os.getenv("HYPERBROWSER_API_KEY"))
 
 def save_response(response, url):
+    # Use the same output directory as the main HTML file
     output_dir = OUTPUT_DIR + "/" + url.replace("https://", "").replace("http://", "").replace("/", "_")
     try:
         url = response.url
@@ -34,10 +37,15 @@ def save_response(response, url):
         if "text/html" in content_type:
             return  # we save the main HTML separately
 
-        filename = Path(parsed.path.lstrip("/"))
-        save_path = Path(output_dir) / filename
+        # Get the path relative to the domain root
+        path = parsed.path.lstrip("/")
+        if not path:
+            return  # skip if no path
 
+        # Create the full save path
+        save_path = Path(output_dir) / path
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        
         body = response.body()
         with open(save_path, "wb") as f:
             f.write(body)
@@ -67,9 +75,14 @@ def clone_website(url) -> str:
                 try:
                     logger.info(f"Navigating to {url}")
                     page.goto(url, wait_until="networkidle", timeout=30000)  # 30 second timeout
+
+                    # Add an extra wait for dynamically loaded resources, especially for complex sites
+                    logger.info("Waiting 5 seconds for additional dynamic resources to load...")
+                    page.wait_for_timeout(5000)
                     
-                    # Save the main HTML
+                    # Save the main HTML content as-is
                     content = page.content()
+                    
                     with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
                         f.write(content)
                     logger.info(f"Saved main page: {url} -> {output_dir}/index.html")
