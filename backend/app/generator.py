@@ -187,46 +187,52 @@ Requirements:
         """Generate global resources (shared CSS and JS) for the website in parallel."""
         logger.info("Generating global CSS and JS resources")
         
-        # Keep original CSS and JS, only optimize HTML
-        try:
-            prompt = f"""Convert this HTML to modern HTML5 while preserving all functionality and references:
-
-HTML:
-```html
-{html_content}
-```
-
-Requirements:
-- Convert to semantic HTML5
-- Preserve all CSS and JavaScript references
-- Maintain all functionality
-- Add appropriate ARIA attributes for accessibility
-- Use semantic elements (header, nav, main, section, article, aside, footer)
-- Ensure proper nesting and document structure
-- Keep all class names and IDs intact
-- Preserve all data attributes
-- Add helpful comments
-- Ensure backward compatibility
-"""
-
-            optimized_html = self._make_api_request(prompt, model=self.model_heavy)
+        # Split into smaller chunks to reduce load
+        css_chunks = self._chunk_content(css_content, self.max_tokens // 2)
+        js_chunks = self._chunk_content(js_content, self.max_tokens // 2)
+        
+        # Create partial functions with fixed arguments
+        generate_css = partial(self._generate_css_chunk, total=len(css_chunks))
+        generate_js = partial(self._generate_js_chunk, total=len(js_chunks))
+        
+        # Process chunks in parallel using ThreadPoolExecutor
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # Submit CSS and JS generation tasks
+            css_futures = [executor.submit(generate_css, chunk, i) 
+                          for i, chunk in enumerate(css_chunks)]
+            js_futures = [executor.submit(generate_js, chunk, i) 
+                         for i, chunk in enumerate(js_chunks)]
             
-            # Parse the response to extract the HTML section
-            sections = self._parse_response_sections(optimized_html)
+            # Collect results as they complete
+            generated_css = []
+            generated_js = []
             
-            return {
-                "html": sections.get("html", html_content),  # Fallback to original if parsing fails
-                "css": css_content,  # Keep original CSS
-                "js": js_content    # Keep original JS
-            }
+            # Process CSS results
+            for future in concurrent.futures.as_completed(css_futures):
+                try:
+                    result = future.result()
+                    generated_css.append(result)
+                except Exception as e:
+                    logger.error(f"Error in CSS generation: {str(e)}")
+                    # Find the original chunk that failed
+                    index = css_futures.index(future)
+                    generated_css.append(css_chunks[index])
             
-        except Exception as e:
-            logger.error(f"Error optimizing HTML: {str(e)}")
-            return {
-                "html": html_content,
-                "css": css_content,
-                "js": js_content
-            }
+            # Process JS results
+            for future in concurrent.futures.as_completed(js_futures):
+                try:
+                    result = future.result()
+                    generated_js.append(result)
+                except Exception as e:
+                    logger.error(f"Error in JS generation: {str(e)}")
+                    # Find the original chunk that failed
+                    index = js_futures.index(future)
+                    generated_js.append(js_chunks[index])
+        
+        return {
+            "css": "\n".join(generated_css),
+            "js": "\n".join(generated_js)
+        }
 
     def close(self):
         self.cache.close()
@@ -343,17 +349,35 @@ Requirements:
             raise
 
     def _parse_response_sections(self, content: str) -> Dict[str, str]:
-        """Parse the response into HTML, CSS, and JS sections."""
+        """Parse the response into separate HTML, CSS, and JS sections."""
         sections = {
             "html": "",
             "css": "",
             "js": ""
         }
         
-        # Look for HTML content
-        html_match = re.search(r'```html\n(.*?)\n```', content, re.DOTALL)
-        if html_match:
-            sections["html"] = html_match.group(1).strip()
+        current_section = None
+        current_content = []
+        
+        for line in content.split('\n'):
+            if line.startswith('```html'):
+                current_section = 'html'
+                continue
+            elif line.startswith('```css'):
+                current_section = 'css'
+                continue
+            elif line.startswith('```javascript'):
+                current_section = 'js'
+                continue
+            elif line.startswith('```'):
+                if current_section:
+                    sections[current_section] = '\n'.join(current_content)
+                    current_content = []
+                    current_section = None
+                continue
+            
+            if current_section:
+                current_content.append(line)
         
         return sections
 
