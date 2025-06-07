@@ -1,8 +1,10 @@
 import os
 import anthropic
+from openai import OpenAI
+from openai.types.chat.chat_completion import ChatCompletion
 from pathlib import Path
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 import shutil
 from bs4 import BeautifulSoup
 import re
@@ -12,6 +14,7 @@ import time
 import hashlib
 import shelve
 import concurrent.futures
+from dataclasses import dataclass
 from functools import partial
 
 # Configure logging with more detail
@@ -22,16 +25,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@dataclass
+class GeneratorConfig:
+    client: Union[anthropic.Anthropic, OpenAI]
+    model_heavy: str
+    model_js: str
+    model_css: str
+    max_tokens: int
+    encoding: tiktoken.Encoding
+    rate_limit_delay: int
+    
+    def generate(self, prompt: str, model: str = None, max_tokens: int = None) -> Union[anthropic.Anthropic.messages, ChatCompletion]:
+        """API Agnostic method to generate text using the client."""
+        if model is None:
+            model = self.model_js
+        if max_tokens is None:
+            max_tokens = self.max_tokens
+        if isinstance(self.client, anthropic.Anthropic):
+            return self.client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        elif isinstance(self.client, OpenAI):
+            return self.client.chat.completions.create(
+                model=model,
+                max_completion_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        else:
+            raise ValueError(f"Unsupported client type: {type(self.client)}")
+
 class WebsiteGenerator:
-    def __init__(self, api_key: str):
+    def __init__(self, config: GeneratorConfig):
         logger.info("Initializing WebsiteGenerator")
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.model_heavy = "claude-opus-4-20250514"
-        self.model_js = "claude-sonnet-4-20250514"  # Better for JavaScript
-        self.model_css = "claude-3-7-sonnet-20250219"  # Good enough for CSS
-        self.max_tokens = 5000
-        self.encoding = tiktoken.get_encoding("cl100k_base")
-        self.rate_limit_delay = 1
+        self.config = config
+        self.client = config.client
+        self.model_heavy = config.model_heavy
+        self.model_js = config.model_js
+        self.model_css = config.model_css
+        self.max_tokens = config.max_tokens
+        self.encoding = config.encoding
+        self.rate_limit_delay = config.rate_limit_delay
         self.cache = shelve.open("api_cache")
         logger.info("WebsiteGenerator initialized successfully")
 
@@ -137,12 +172,8 @@ class WebsiteGenerator:
             try:
                 time.sleep(self.rate_limit_delay)
                 logger.debug(f"API request attempt {attempt + 1}/{max_retries}")
-                response = self.client.messages.create(
-                    model=model,
-                    max_tokens=max_tokens,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                text = response.content[0].text
+                response = self.config.generate(prompt, model, max_tokens)
+                text = response.content[0].text if isinstance(self.client, anthropic.Anthropic) else response.choices[0].message.content
                 self.cache[key] = text
                 logger.debug("API response cached")
                 return text
