@@ -243,118 +243,249 @@ Requirements:
             logger.error(f"Error generating JS chunk {index+1}: {str(e)}")
             return chunk  # Fallback to original chunk
 
-    def _generate_html_chunk(self, chunk: str, index: int, total: int) -> str:
-        """Generate optimized HTML for a chunk."""
-        logger.info(f"Generating HTML chunk {index + 1}/{total}")
-        try:
-            prompt = f"""Convert this HTML chunk to modern HTML5. Keep your response concise and complete.
-
-IMPORTANT: Your response must be a complete HTML section wrapped in ```html and ``` markers.
-WARNING: You have a token limit, so focus on the most important optimizations.
-
-Input HTML chunk ({index + 1}/{total}):
-```html
-{chunk}
-```
-
-Key Requirements:
-- Convert to semantic HTML5
-- Preserve functionality and references
-- Add ARIA attributes
-- Use semantic elements
-- Keep class names and IDs
-- Ensure backward compatibility
-
-Remember: Your response must be complete and properly formatted with ```html and ``` markers."""
-
-            optimized_chunk = self._make_api_request(prompt, model=self.model_js)
-            logger.debug(f"Successfully generated HTML chunk {index + 1}")
-            return optimized_chunk
-            
-        except Exception as e:
-            logger.error(f"Error generating HTML chunk {index + 1}: {str(e)}")
-            return chunk
-
-    def _generate_global_resources(self, html_content: str, css_content: str, js_content: str) -> Dict[str, str]:
-        """Generate global resources (shared CSS and JS) for the website in parallel."""
-        logger.info("Starting HTML5 optimization")
-        logger.debug(f"HTML content length: {len(html_content)} characters")
+    def _analyze_html_structure(self, html_content: str) -> dict:
+        """Analyze the overall structure of the HTML file."""
+        logger.info("Analyzing HTML structure")
         
         try:
-            # Split HTML into chunks
-            html_chunks = self._chunk_content(html_content, self.max_tokens // 2)
-            logger.info(f"Split HTML into {len(html_chunks)} chunks")
+            messages = [
+                {"role": "system", "content": """You are an expert web developer agent specialized in analyzing website structure.
+Your task is to analyze the provided HTML and create a structural summary.
+Focus on:
+1. Main sections and their hierarchy
+2. Key components and their relationships
+3. Critical functionality
+4. Important assets and dependencies
+
+Return a JSON object with the structure analysis."""},
+                {"role": "user", "content": f"""Please analyze this HTML structure:
+
+```html
+{html_content}
+```
+
+Return a JSON object with:
+1. main_sections: List of main sections with their purposes
+2. key_components: List of important components and their roles
+3. critical_functionality: List of critical features
+4. dependencies: List of important assets and external resources"""}
+            ]
+
+            if isinstance(self.client, anthropic.Anthropic):
+                response = self.client.messages.create(
+                    model=self.model_heavy,
+                    max_tokens=4000,
+                    messages=messages
+                )
+                content = response.content[0].text
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model_heavy,
+                    max_tokens=4000,
+                    messages=messages
+                )
+                content = response.choices[0].message.content
+
+            # Extract JSON from the response
+            try:
+                structure = json.loads(content)
+                logger.info("Successfully analyzed HTML structure")
+                return structure
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse structure analysis as JSON")
+                return {}
+
+        except Exception as e:
+            logger.error(f"Error analyzing HTML structure: {str(e)}")
+            return {}
+
+    def _process_html_section(self, section: str, context: dict) -> str:
+        """Process a single HTML section with context."""
+        logger.info("Processing HTML section")
+        
+        try:
+            messages = [
+                {"role": "system", "content": """You are an expert web developer agent specialized in modernizing website sections.
+Your task is to optimize this HTML section while maintaining its functionality.
+Use the provided context to ensure consistency with the overall structure."""},
+                {"role": "user", "content": f"""Context from overall structure:
+```json
+{json.dumps(context, indent=2)}
+```
+
+Please optimize this HTML section:
+```html
+{section}
+```
+
+Requirements:
+1. Maintain functionality and references
+2. Use semantic HTML5 elements
+3. Add ARIA attributes where needed
+4. Keep class names and IDs
+5. Ensure backward compatibility
+6. Optimize for performance
+7. Add helpful comments
+
+Return the optimized HTML wrapped in ```html and ``` markers."""}
+            ]
+
+            if isinstance(self.client, anthropic.Anthropic):
+                response = self.client.messages.create(
+                    model=self.model_heavy,
+                    max_tokens=4000,
+                    messages=messages
+                )
+                content = response.content[0].text
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model_heavy,
+                    max_tokens=4000,
+                    messages=messages
+                )
+                content = response.choices[0].message.content
+
+            # Extract HTML from markdown code blocks
+            html_match = re.search(r'```html\n(.*?)\n```', content, re.DOTALL)
+            if html_match:
+                optimized_section = html_match.group(1).strip()
+                logger.info("Successfully processed HTML section")
+                return optimized_section
+            else:
+                logger.warning("No HTML content found in section response")
+                return section
+
+        except Exception as e:
+            logger.error(f"Error processing HTML section: {str(e)}")
+            return section
+
+    def _generate_html(self, html_content: str) -> str:
+        """Generate optimized HTML using a hierarchical approach."""
+        logger.info("Starting HTML optimization using hierarchical approach")
+        
+        try:
+            # Step 1: Analyze overall structure
+            structure = self._analyze_html_structure(html_content)
+            if not structure:
+                logger.warning("Failed to analyze structure, falling back to direct processing")
+                return self._process_entire_html(html_content)
+
+            # Step 2: Split HTML into logical sections
+            soup = BeautifulSoup(html_content, 'html.parser')
+            sections = []
             
-            # Process chunks in parallel
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                # Create partial function with fixed arguments
-                generate_html = partial(self._generate_html_chunk, total=len(html_chunks))
+            # Extract main sections
+            for section in soup.find_all(['header', 'main', 'footer', 'nav', 'section', 'article']):
+                sections.append(str(section))
+            
+            # If no sections found, split by divs
+            if not sections:
+                for div in soup.find_all('div', recursive=False):
+                    sections.append(str(div))
+
+            # Step 3: Process each section with context
+            processed_sections = []
+            for section in sections:
+                processed_section = self._process_html_section(section, structure)
+                processed_sections.append(processed_section)
+
+            # Step 4: Combine processed sections
+            optimized_html = "\n".join(processed_sections)
+            logger.info("Successfully generated optimized HTML")
+            return optimized_html
+
+        except Exception as e:
+            logger.error(f"Error during HTML optimization: {str(e)}")
+            logger.info("Falling back to original HTML")
+            return html_content
+
+    def _process_entire_html(self, html_content: str) -> str:
+        """Fallback method to process the entire HTML at once."""
+        logger.info("Processing entire HTML at once")
+        
+        try:
+            messages = [
+                {"role": "system", "content": """You are an expert web developer agent specialized in cloning and modernizing websites. 
+Your task is to analyze the provided HTML and create a modern, optimized version while maintaining all functionality.
+Focus on:
+1. Semantic HTML5 structure
+2. Accessibility (ARIA attributes)
+3. Modern best practices
+4. Performance optimization
+5. Browser compatibility
+
+Respond with the complete, optimized HTML wrapped in ```html and ``` markers."""},
+                {"role": "user", "content": f"""Please analyze and optimize this HTML code:
+
+```html
+{html_content}
+```
+
+Requirements:
+1. Maintain all functionality and references
+2. Use semantic HTML5 elements
+3. Add ARIA attributes where needed
+4. Keep all class names and IDs
+5. Ensure backward compatibility
+6. Optimize for performance
+7. Add helpful comments
+
+Return the complete, optimized HTML wrapped in ```html and ``` markers."""}
+            ]
+
+            if isinstance(self.client, anthropic.Anthropic):
+                response = self.client.messages.create(
+                    model=self.model_heavy,
+                    max_tokens=10000,
+                    messages=messages
+                )
+                content = response.content[0].text
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model_heavy,
+                    max_tokens=10000,
+                    messages=messages
+                )
+                content = response.choices[0].message.content
                 
-                # Submit HTML generation tasks
-                html_futures = [executor.submit(generate_html, chunk, i) 
-                              for i, chunk in enumerate(html_chunks)]
-                
-                # Collect results as they complete
-                generated_html = []
-                for future in concurrent.futures.as_completed(html_futures):
-                    try:
-                        result = future.result()
-                        generated_html.append(result)
-                    except Exception as e:
-                        logger.error(f"Error in HTML generation: {str(e)}")
-                        # Find the original chunk that failed
-                        index = html_futures.index(future)
-                        generated_html.append(html_chunks[index])
-            
-            # Combine the generated HTML chunks
-            logger.info("Combining generated HTML chunks")
-            combined_html = "\n".join(generated_html)
-            
-            # Parse the combined response
-            logger.info("Parsing combined HTML response")
-            sections = self._parse_response_sections(combined_html)
-            
-            if not sections.get("html"):
+            # Extract HTML from markdown code blocks
+            html_match = re.search(r'```html\n(.*?)\n```', content, re.DOTALL)
+            if html_match:
+                optimized_html = html_match.group(1).strip()
+                logger.info("Successfully generated optimized HTML")
+                return optimized_html
+            else:
                 logger.warning("No HTML content found in API response, using original HTML")
-                return {
-                    "html": html_content,
-                    "css": css_content,
-                    "js": js_content
-                }
+                return html_content
+                
+        except Exception as e:
+            logger.error(f"Error during HTML optimization: {str(e)}")
+            logger.info("Falling back to original HTML")
+            return html_content
+
+    def _generate_global_resources(self, html_content: str, css_content: str, js_content: str) -> Dict[str, str]:
+        """Generate global resources (shared CSS and JS) for the website."""
+        logger.info("Starting website optimization")
+        
+        try:
+            # Generate optimized HTML using the agent
+            optimized_html = self._generate_html(html_content)
             
-            logger.info("HTML5 optimization completed successfully")
+            logger.info("Website optimization completed successfully")
             return {
-                "html": sections["html"],
+                "html": optimized_html,
                 "css": css_content,
                 "js": js_content
             }
             
         except Exception as e:
-            logger.error(f"Error during HTML optimization: {str(e)}")
-            logger.info("Falling back to original HTML")
+            logger.error(f"Error during website optimization: {str(e)}")
+            logger.info("Falling back to original content")
             return {
                 "html": html_content,
                 "css": css_content,
                 "js": js_content
             }
-
-    def _parse_response_sections(self, content: str) -> Dict[str, str]:
-        """Parse the response into HTML, CSS, and JS sections."""
-        logger.debug("Parsing API response sections")
-        sections = {
-            "html": "",
-            "css": "",
-            "js": ""
-        }
-        
-        html_match = re.search(r'```html\n(.*?)\n```', content, re.DOTALL)
-        if html_match:
-            sections["html"] = html_match.group(1).strip()
-            logger.debug("Successfully extracted HTML section")
-        else:
-            logger.warning("No HTML section found in API response")
-        
-        return sections
 
     def generate_website(self, website_dir: str) -> Dict[str, str]:
         """Generate a modern version of the website using Claude."""

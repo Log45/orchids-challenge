@@ -4,13 +4,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 import logging
 from scrape import clone_website
-from generator import WebsiteGenerator
+from generator import WebsiteGenerator, GeneratorConfig
 import os
 import sys
 import asyncio
 from pathlib import Path
 from fastapi.responses import FileResponse
 import re
+import openai
+import tiktoken
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -33,8 +35,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+openai_config = GeneratorConfig(
+    client=openai.OpenAI(api_key=os.getenv("OPENAI_KEY")),
+    model_heavy="gpt-4.1-mini",
+    model_js="o4-mini",
+    model_css="o4-mini",
+    max_tokens=10000,
+    encoding=tiktoken.get_encoding("cl100k_base"),
+    rate_limit_delay=1
+)
+
 # Initialize the website generator
-generator = WebsiteGenerator(api_key=os.getenv("CLAUDE_KEY"))
+generator = WebsiteGenerator(config=openai_config)
 
 # Mount the cloned_site directory for static file serving
 app.mount("/static", StaticFiles(directory="cloned_site", html=True), name="static")

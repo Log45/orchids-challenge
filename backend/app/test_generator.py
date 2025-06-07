@@ -20,7 +20,7 @@ anthropic_config = GeneratorConfig(
 
 openai_config = GeneratorConfig(
     client=openai.OpenAI(api_key=os.getenv("OPENAI_KEY")),
-    model_heavy="gpt-4.1",
+    model_heavy="gpt-4.1-mini",
     model_js="o4-mini",
     model_css="o4-mini",
     max_tokens=10000,

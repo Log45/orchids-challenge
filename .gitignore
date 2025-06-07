@@ -11,3 +11,6 @@
 */.env.development
 */.env.test
 */.venv
+*/generated_website
+*/api_cache.*
+/cloned_site
