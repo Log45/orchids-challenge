@@ -78,6 +78,7 @@ COPY backend/ ./backend
 
 # Copy start script
 COPY start.sh /app/start.sh
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 RUN chmod +x /app/start.sh
 
 # Expose ports

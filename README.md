@@ -32,6 +32,15 @@ To install the backend dependencies, run the following command in the backend pr
 uv sync
 ```
 
+You will also need API keys for different components. In the backend directory, create a `.env` file.
+
+```bash
+nano .env
+CLAUDE_KEY = sk-********
+OPENAI_KEY = sk-proj-********
+HYPERBROWSER_API_KEY = hb_********
+```
+
 ### Running the Backend
 
 To run the backend development server, use the following command:
